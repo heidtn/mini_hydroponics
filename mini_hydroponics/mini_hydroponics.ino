@@ -22,6 +22,9 @@
 OneWire oneWire(ONE_WIRE_BUS); 
 DallasTemperature sensors(&oneWire);
 
+// bubbler setup
+#define BUBBLER_PIN 2
+
 // wifi setup
 const char* ssid = "";
 const char* password = "";
@@ -50,10 +53,16 @@ const char index_html[] PROGMEM = R"rawliteral(
       vertical-align:middle;
       padding-bottom: 15px;
     }
+    .switch {position: relative; display: inline-block; width: 120px; height: 68px} 
+    .switch input {display: none}
+    .slider {position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; border-radius: 6px}
+    .slider:before {position: absolute; content: ""; height: 52px; width: 52px; left: 8px; bottom: 8px; background-color: #fff; -webkit-transition: .4s; transition: .4s; border-radius: 3px}
+    input:checked+.slider {background-color: #b30000}
+    input:checked+.slider:before {-webkit-transform: translateX(52px); -ms-transform: translateX(52px); transform: translateX(52px)}
   </style>
 </head>
 <body>
-  <h2>ESP DS18B20 Server</h2>
+  <h2>Mini Hydroponics Server</h2>
   <p>
     <i class="fas fa-thermometer-half" style="color:#059e8a;"></i> 
     <span class="ds-labels">Temperature Celsius</span> 
@@ -61,13 +70,28 @@ const char index_html[] PROGMEM = R"rawliteral(
     <sup class="units">&deg;C</sup>
   </p>
   <p>
-    <i class="fas fa-thermometer-half" style="color:#059e8a;"></i> 
-    <span class="ds-labels">Temperature Fahrenheit</span>
-    <span id="temperaturef">%TEMPERATUREF%</span>
-    <sup class="units">&deg;F</sup>
+    <i class="fas fa-bolt" style="color:#059e8a;"></i> 
+    <span class="ds-labels">TDS in PPM</span>
+    <span id="TDS">%TDS%</span>
   </p>
+
+  <label class="switch">
+      <input type="checkbox" onchange="toggleCheckbox(this)" id=BUBBLER_STATE %BUBBLER_STATE%>
+      <span class="slider"></span>
+  </label>
+ 
 </body>
 <script>
+function toggleCheckbox(element) {
+  var xhr = new XMLHttpRequest();
+  if(element.checked){ 
+      xhr.open("GET", "/set_bubbler?state=0", true); 
+  } else { 
+      xhr.open("GET", "/set_bubbler?state=1", true); 
+  }
+  xhr.send();
+}
+
 setInterval(function ( ) {
   var xhttp = new XMLHttpRequest();
   xhttp.onreadystatechange = function() {
@@ -77,20 +101,43 @@ setInterval(function ( ) {
   };
   xhttp.open("GET", "/temperaturec", true);
   xhttp.send();
-}, 10000) ;
+}, 1000) ;
+
 setInterval(function ( ) {
   var xhttp = new XMLHttpRequest();
   xhttp.onreadystatechange = function() {
     if (this.readyState == 4 && this.status == 200) {
-      document.getElementById("temperaturef").innerHTML = this.responseText;
+      document.getElementById("TDS").innerHTML = this.responseText;
     }
   };
-  xhttp.open("GET", "/temperaturef", true);
+  xhttp.open("GET", "/TDS", true);
   xhttp.send();
-}, 10000) ;
-</script>
-</html>)rawliteral";
+}, 1000) ;
 
+setInterval(function ( ) {
+  var xhttp = new XMLHttpRequest();
+  xhttp.onreadystatechange = function() {
+    if (this.readyState == 4 && this.status == 200) {
+      if(this.responseText == "1") {
+          document.getElementById("BUBBLER_STATE").checked = false;
+      } else {
+          document.getElementById("BUBBLER_STATE").checked = true;
+      }
+    }
+  };
+  xhttp.open("GET", "/bubbler_state", true);
+  xhttp.send();
+}, 1000) ;
+
+</script>
+</html>
+
+)rawliteral";
+
+
+float shared_temperature = 0;
+float shared_TDS = 0;
+bool bubble_status = false;
 
 // ----------------- function prototypes ----------------
 void setup_wifi();
@@ -98,22 +145,31 @@ float get_TDS();
 float get_temperature();
 void handle_measurements(float PPM, float temperature);
 void handle_air_pump();
+void set_bubbler(int state);
 
 // ----------------- function definitions ---------------
 
 void setup() {
   Serial.begin(115200);
   sensors.begin();
+  pinMode(BUBBLER_PIN, OUTPUT);
+  set_bubbler(LOW);
   setup_wifi();
 }
 
 String processor(const String& var){
   //Serial.println(var);
   if(var == "TEMPERATUREC"){
-    return String("1.0");
+    return String(shared_temperature);
   }
-  else if(var == "TEMPERATUREF"){
-    return String("2.0");
+  else if(var == "TDS"){
+    return String(shared_TDS);
+  } else if(var == "BUBBLER_STATE") {
+    if(bubble_status) {
+      return String("checked");
+    } else {
+      return String();
+    }
   }
   return String();
 }
@@ -138,6 +194,29 @@ void setup_wifi() {
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send_P(200, "text/html", index_html, processor);
+  });
+
+  server.on("/temperaturec", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/plain", String(shared_temperature).c_str());
+  });
+
+  server.on("/TDS", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/plain", String(shared_TDS).c_str());
+  });
+
+  server.on("/bubbler_state", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/plain", String(bubble_status).c_str());
+  });
+
+  server.on("/set_bubbler", HTTP_GET, [](AsyncWebServerRequest *request){
+    if(request->hasParam("state")) {
+      Serial.print("Setting Bubbler to ");
+      String state = request->getParam("state")->value();  
+      int bubbler_status = state.toInt();
+      Serial.println(bubble_status);
+      set_bubbler(bubbler_status);
+      request->send(200, "text/plain", "OK");
+    } 
   });
 
   server.begin();
@@ -181,10 +260,17 @@ void handle_measurements(float PPM, float temperature) {
   Serial.print(temperature);
   Serial.print(", PPM: ");
   Serial.println(PPM);
+  shared_temperature = temperature;
+  shared_TDS = PPM;
 }
 
 void handle_air_pump() {
 
+}
+
+void set_bubbler(int state) {
+  digitalWrite(BUBBLER_PIN, state);
+  bubble_status = state;
 }
 
 void loop() {
