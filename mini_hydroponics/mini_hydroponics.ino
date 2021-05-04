@@ -10,6 +10,8 @@
 
 #include <ArduinoOTA.h>
 
+#include <NTPClient.h>
+
 
 
 // full range at 1000ppm is 2.3v -> 2.3/3.3 = x/1024 or 2.3*1024/3.3 = 713.69
@@ -24,6 +26,14 @@ DallasTemperature sensors(&oneWire);
 
 // bubbler setup
 #define BUBBLER_PIN 2
+WiFiUDP ntpUDP;
+const long utcOffsetInSeconds = 60*60*-8;  // UTC -8 i.e. PST
+NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
+
+const int bubbler_off_hour = 8;
+const int bubbler_on_hour = 0;
+bool has_set_bubbler = false;
+
 
 // wifi setup
 const char* ssid = "";
@@ -85,9 +95,9 @@ const char index_html[] PROGMEM = R"rawliteral(
 function toggleCheckbox(element) {
   var xhr = new XMLHttpRequest();
   if(element.checked){ 
-      xhr.open("GET", "/set_bubbler?state=0", true); 
-  } else { 
       xhr.open("GET", "/set_bubbler?state=1", true); 
+  } else { 
+      xhr.open("GET", "/set_bubbler?state=0", true); 
   }
   xhr.send();
 }
@@ -119,9 +129,9 @@ setInterval(function ( ) {
   xhttp.onreadystatechange = function() {
     if (this.readyState == 4 && this.status == 200) {
       if(this.responseText == "1") {
-          document.getElementById("BUBBLER_STATE").checked = false;
-      } else {
           document.getElementById("BUBBLER_STATE").checked = true;
+      } else {
+          document.getElementById("BUBBLER_STATE").checked = false;
       }
     }
   };
@@ -153,12 +163,11 @@ void setup() {
   Serial.begin(115200);
   sensors.begin();
   pinMode(BUBBLER_PIN, OUTPUT);
-  set_bubbler(LOW);
+  set_bubbler(0);
   setup_wifi();
 }
 
 String processor(const String& var){
-  //Serial.println(var);
   if(var == "TEMPERATUREC"){
     return String(shared_temperature);
   }
@@ -168,7 +177,7 @@ String processor(const String& var){
     if(bubble_status) {
       return String("checked");
     } else {
-      return String();
+      return String("");
     }
   }
   return String();
@@ -265,11 +274,46 @@ void handle_measurements(float PPM, float temperature) {
 }
 
 void handle_air_pump() {
+  timeClient.update();
+  Serial.print("Current time is: ");
+  Serial.print(timeClient.getHours());
+  Serial.print(":");
+  Serial.println(timeClient.getMinutes());
 
+  int cur_hour = timeClient.getHours();
+  if(bubbler_off_hour < bubbler_on_hour) { // if our stop wraps through 0 hours
+    if(cur_hour < bubbler_off_hour || cur_hour > bubbler_on_hour) {
+      if(!has_set_bubbler) {
+        set_bubbler(1);
+        has_set_bubbler = true;
+        Serial.println("Turning on bubbler");
+      }
+    } else {
+      if(has_set_bubbler) {
+        set_bubbler(0);
+        has_set_bubbler = false;
+        Serial.println("Turning off bubbler");
+      }
+    }
+  } else {
+    if(cur_hour > bubbler_on_hour && cur_hour < bubbler_off_hour) {
+      if(!has_set_bubbler) {
+        set_bubbler(1);
+        has_set_bubbler = true;
+        Serial.println("Turning on bubbler");
+      }
+    } else {
+      if(has_set_bubbler) {
+        set_bubbler(0);
+        has_set_bubbler = false;
+        Serial.println("Turning off bubbler");
+      }
+    }
+  }
 }
 
 void set_bubbler(int state) {
-  digitalWrite(BUBBLER_PIN, state);
+  digitalWrite(BUBBLER_PIN, !state);  // control is inverted
   bubble_status = state;
 }
 
