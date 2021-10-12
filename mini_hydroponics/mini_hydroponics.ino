@@ -8,8 +8,11 @@
 #include <Hash.h>
 
 #include <ArduinoOTA.h>
+#include <ArduinoJson.h>
 
 #include <NTPClient.h>
+
+#include "index.h"
 
 // full range at 1000ppm is 2.3v -> 2.3/3.3 = x/1024 or 2.3*1024/3.3 = 713.69
 #define FULL_RANGE 2.3
@@ -22,15 +25,20 @@ OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 
 
-
 // pump setup
-#define BUBBLER_PIN 2
+#define PUMP_PIN 2
+#define PUMP_OFF_TIME 3  // how many hours to keep the pump off when toggled
 WiFiUDP ntpUDP;
 const long utcOffsetInSeconds = 60 * 60 * -7; // UTC -8 i.e. PST
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
 
-// Hue Light setup
+// Light setup
 byte mac[6];
+#define LIGHT_NAME "hydroponics light"
+#define LIGHT_VERSION 2.1
+#define LIGHT_PIN 12
+#define LIGHT_OFFTIME 6 // how many hours the light will turn off for, starting at midnight
+
 
 // wifi setup
 const char *ssid = "NATural20-24g";
@@ -39,162 +47,11 @@ const char *mdns = "hydro";
 
 AsyncWebServer server(80);
 
-const char index_html[] PROGMEM = R"rawliteral(
-<!DOCTYPE HTML><html>
-<head>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css" integrity="sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr" crossorigin="anonymous">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <style>
-    html {
-     font-family: Arial;
-     display: inline-block;
-     margin: 0px auto;
-     text-align: center;
-    }
-    h2 { font-size: 3.0rem; }
-    p { font-size: 3.0rem; }
-    .units { font-size: 1.2rem; }
-    .ds-labels{
-      font-size: 1.5rem;
-      vertical-align:middle;
-      padding-bottom: 15px;
-    }
-    .switch {position: relative; display: inline-block; width: 120px; height: 68px} 
-    .switch input {display: none}
-    .slider {position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; border-radius: 6px}
-    .slider:before {position: absolute; content: ""; height: 52px; width: 52px; left: 8px; bottom: 8px; background-color: #fff; -webkit-transition: .4s; transition: .4s; border-radius: 3px}
-    input:checked+.slider {background-color: #b30000}
-    input:checked+.slider:before {-webkit-transform: translateX(52px); -ms-transform: translateX(52px); transform: translateX(52px)}
-    .chart-container {width: 1000px; height: 600px;}
-  </style>
-</head>
-<body>
-  <h2>Mini Hydroponics Server</h2>
-  <p>
-    <i class="fas fa-thermometer-half" style="color:#059e8a;"></i> 
-    <span class="ds-labels">Temperature Celsius</span> 
-    <span id="temperaturec">%TEMPERATUREC%</span>
-    <sup class="units">&deg;C</sup>
-  </p>
-  <p>
-    <i class="fas fa-bolt" style="color:#059e8a;"></i> 
-    <span class="ds-labels">TDS in PPM</span>
-    <span id="TDS">%TDS%</span>
-  </p>
-
-  <label class="switch">
-      <input type="checkbox" onchange="toggleCheckbox(this)" id=BUBBLER_STATE %BUBBLER_STATE%>
-      <span class="slider"></span>
-  </label>
-
-  <div>
-    <canvas id="chart"></canvas>
-  </div>
-
-  <p>
-    <h3 id=CLOCK>%TIME%</h3>
-  </P
- 
-</body>
-<script>
-function toggleCheckbox(element) {
-  var xhr = new XMLHttpRequest();
-  if(element.checked){ 
-      xhr.open("GET", "/set_pump?state=1", true); 
-  } else { 
-      xhr.open("GET", "/set_pump?state=0", true); 
-  }
-  xhr.send();
-}
-
-const data = {
-  labels: %LABELS%,
-  datasets: [{
-    label: 'Temperatures',
-    backgroundColor: 'rgb(255, 99, 132)',
-    borderColor: 'rgb(255, 99, 0)',
-    yAxisID:'A',
-    data: %TEMPERATURE_ARRAY%,
-  }, {
-    label: 'TDSs',
-    backgroundColor: 'rgb(255, 99, 132)',
-    borderColor: 'rgb(255, 99, 132)',
-    yAxisID:'B',
-    data: %TDS_ARRAY%,
-  }]
-};
-
-const config = {
-  type:'line',
-  data:data,
-  options: {    
-    responsive: true,
-    //maintainAspectRatio: false,
-    scales: {
-      yAxes: [{
-        id: 'A',
-        type: 'linear',
-        position: 'left',
-      }, {
-        id: 'B',
-        type: 'linear',
-        position: 'right',
-      }]
-    }
-  }
-};
-
-var chart = new Chart(
-  document.getElementById('chart'),
-  config
-);
-
-setInterval(function ( ) {
-  var xhttp = new XMLHttpRequest();
-  xhttp.onreadystatechange = function() {
-    if (this.readyState == 4 && this.status == 200) {
-      document.getElementById("temperaturec").innerHTML = this.responseText;
-    }
-  };
-  xhttp.open("GET", "/temperaturec", true);
-  xhttp.send();
-}, 1000) ;
-
-setInterval(function ( ) {
-  var xhttp = new XMLHttpRequest();
-  xhttp.onreadystatechange = function() {
-    if (this.readyState == 4 && this.status == 200) {
-      document.getElementById("TDS").innerHTML = this.responseText;
-    }
-  };
-  xhttp.open("GET", "/TDS", true);
-  xhttp.send();
-}, 1000) ;
-
-setInterval(function ( ) {
-  var xhttp = new XMLHttpRequest();
-  xhttp.onreadystatechange = function() {
-    if (this.readyState == 4 && this.status == 200) {
-      if(this.responseText == "1") {
-          document.getElementById("BUBBLER_STATE").checked = true;
-      } else {
-          document.getElementById("BUBBLER_STATE").checked = false;
-      }
-    }
-  };
-  xhttp.open("GET", "/pump_state", true);
-  xhttp.send();
-}, 1000) ;
-
-</script>
-</html>
-
-)rawliteral";
 
 float shared_temperature = 0;
 float shared_TDS = 0;
 bool pump_status = true;
+bool light_status = true;
 unsigned long pump_disable_time = 0;
 
 int cur_minute_display = 100;
@@ -210,7 +67,8 @@ void setup_wifi();
 float get_TDS();
 float get_temperature();
 void handle_measurements(float PPM, float temperature);
-void handle_air_pump();
+void handle_pump();
+void handle_light();
 void set_pump(int state);
 
 // ----------------- function definitions ---------------
@@ -218,7 +76,9 @@ void set_pump(int state);
 void setup() {
   Serial.begin(115200);
   sensors.begin();
-  pinMode(BUBBLER_PIN, OUTPUT);
+  pinMode(PUMP_PIN, OUTPUT);
+  pinMode(LIGHT_PIN, OUTPUT);
+  digitalWrite(LIGHT_PIN, HIGH);
   set_pump(0);
   setup_wifi();
 }
@@ -228,8 +88,14 @@ String processor(const String &var) {
     return String(shared_temperature);
   } else if (var == "TDS") {
     return String(shared_TDS);
-  } else if (var == "BUBBLER_STATE") {
+  } else if (var == "PUMP_STATE") {
     if (pump_status) {
+      return String("checked");
+    } else {
+      return String("");
+    }
+  } else if (var == "LIGHT_STATE") {
+    if(light_status) {
       return String("checked");
     } else {
       return String("");
@@ -301,6 +167,10 @@ void setup_wifi() {
     request->send_P(200, "text/plain", String(pump_status).c_str());
   });
 
+  server.on("/light_state", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send_P(200, "text/plain", String(light_status).c_str());
+  });
+
   server.on("/set_pump", HTTP_GET, [](AsyncWebServerRequest *request) {
     if (request->hasParam("state")) {
       Serial.print("Setting Bubbler to ");
@@ -312,6 +182,16 @@ void setup_wifi() {
       }
       Serial.println(pump_status);
       set_pump(pump_status_value);
+      request->send(200, "text/plain", "OK");
+    }
+  });
+
+  server.on("/set_light", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (request->hasParam("state")) {
+      String state = request->getParam("state")->value();
+      int light_status_value = state.toInt();
+      light_status = (bool)light_status_value;
+      digitalWrite(LIGHT_PIN, light_status_value);
       request->send(200, "text/plain", "OK");
     }
   });
@@ -332,6 +212,7 @@ void setup_wifi() {
     data += String("]}");
     request->send_P(200, "text/plain", data.c_str());
   });
+
 
   server.begin();
 
@@ -388,8 +269,20 @@ void handle_measurements(float PPM, float temperature) {
   count++;
 }
 
-void handle_air_pump() {
-  timeClient.update();
+void handle_light() {
+  static int last_hour = timeClient.getHours();
+  int cur_hour = timeClient.getHours();
+
+  if((last_hour == (LIGHT_OFFTIME - 1)) && (cur_hour == LIGHT_OFFTIME)) {
+    digitalWrite(LIGHT_PIN, HIGH);
+    light_status = true;
+  } else if(last_hour == 23 && cur_hour == 0) {
+    digitalWrite(LIGHT_PIN, LOW);
+    light_status = false;
+  }
+}
+
+void handle_pump() {
   Serial.print("Current time is: ");
   Serial.print(timeClient.getHours());
   Serial.print(":");
@@ -410,7 +303,7 @@ void handle_air_pump() {
       set_pump(0);
     }
   } else {
-    if(((timeClient.getEpochTime() - pump_disable_time) % 86400L) / 3600 > 8) {
+    if(((timeClient.getEpochTime() - pump_disable_time) % 86400L) / 3600 > PUMP_OFF_TIME) {
       pump_status = 1;
     }
   }
@@ -418,14 +311,15 @@ void handle_air_pump() {
 }
 
 void set_pump(int state) {
-  digitalWrite(BUBBLER_PIN, !state); // control is inverted
+  digitalWrite(PUMP_PIN, !state); // control is inverted
 }
 
 void loop() {
   float conductivity = get_TDS();
   float temperature = get_temperature();
   handle_measurements(conductivity, temperature);
-  handle_air_pump();
+  handle_pump();
+  timeClient.update();
   sensors.requestTemperatures();
   delay(1000);
   ArduinoOTA.handle();
