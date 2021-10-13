@@ -9,4 +9,4 @@ This is the repo for a hydroponics control system I've put together.  It runs on
 * mDNS to allow easy local web access
 
 here is a screenshot of the webserver:
-[screenshot](screenshot.png)
+![screenshot](screenshot.png)
