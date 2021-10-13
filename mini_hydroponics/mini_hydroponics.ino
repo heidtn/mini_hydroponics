@@ -1,6 +1,9 @@
 #include <DallasTemperature.h>
 #include <OneWire.h>
 
+#include "Adafruit_MQTT.h"
+#include "Adafruit_MQTT_Client.h"
+
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 #include <ESPAsyncTCP.h>
@@ -46,6 +49,15 @@ const char *password = "Foxland5!";
 const char *mdns = "hydro";
 
 AsyncWebServer server(80);
+
+// MQTT setup
+#define MQTT_SERV "io.adafruit.com"
+#define MQTT_PORT 1883
+#define MQTT_NAME "strigusconsilium"
+#define MQTT_PASS "key"
+WiFiClient client;
+Adafruit_MQTT_Client mqtt(&client, MQTT_SERV, MQTT_PORT, MQTT_NAME, MQTT_PASS);
+Adafruit_MQTT_Subscribe onoff = Adafruit_MQTT_Subscribe(&mqtt, MQTT_NAME "/f/onoff");
 
 
 float shared_temperature = 0;
@@ -213,8 +225,10 @@ void setup_wifi() {
     request->send_P(200, "text/plain", data.c_str());
   });
 
-
   server.begin();
+
+  mqtt.subscribe(&onoff);
+
 
   ArduinoOTA.setHostname("hydro");
 
@@ -280,6 +294,7 @@ void handle_light() {
     digitalWrite(LIGHT_PIN, LOW);
     light_status = false;
   }
+  last_hour = cur_hour;
 }
 
 void handle_pump() {
@@ -314,6 +329,68 @@ void set_pump(int state) {
   digitalWrite(PUMP_PIN, !state); // control is inverted
 }
 
+void MQTT_connect() 
+{
+  int8_t ret;
+  // Stop if already connected
+  if (mqtt.connected())
+  {
+    return;
+  }
+
+  Serial.print("Connecting to MQTT... ");
+  uint8_t retries = 3;
+  while ((ret = mqtt.connect()) != 0) // connect will return 0 for connected
+  { 
+    Serial.println(mqtt.connectErrorString(ret));
+    Serial.println("Retrying MQTT connection in 5 seconds...");
+    mqtt.disconnect();
+    delay(1000);  // wait 5 seconds
+    retries--;
+    if (retries == 0) 
+    {
+      // basically die and wait for WDT to reset me
+      break;
+    }
+  }
+  Serial.println("MQTT Connected!");
+}
+
+void mqtt_handle() {
+  MQTT_connect();
+
+  //Read from our subscription queue until we run out, or
+  //wait up to 5 seconds for subscription to update
+  Adafruit_MQTT_Subscribe * subscription;
+  if ((subscription = mqtt.readSubscription(1000)))
+  {
+    //If we're in here, a subscription updated...
+    if (subscription == &onoff)
+    {
+      //Print the new value to the serial monitor
+      Serial.print("onoff: ");
+      Serial.println((char*) onoff.lastread);
+
+      //If the new value is  "ON", turn the light on.
+      //Otherwise, turn it off.
+      if (!strcmp((char*) onoff.lastread, "ON"))
+      {
+        //active low logic
+        digitalWrite(LIGHT_PIN, HIGH);
+      }
+      else
+      {
+        digitalWrite(LIGHT_PIN, LOW);
+      }
+    }
+  }
+
+  // ping the server to keep the mqtt connection alive
+  if (!mqtt.ping()) {
+    mqtt.disconnect();
+  }
+}
+
 void loop() {
   float conductivity = get_TDS();
   float temperature = get_temperature();
@@ -321,6 +398,7 @@ void loop() {
   handle_pump();
   timeClient.update();
   sensors.requestTemperatures();
-  delay(1000);
   ArduinoOTA.handle();
+  mqtt_handle();
+  delay(100);
 }
